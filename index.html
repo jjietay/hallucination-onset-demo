@@ -1,0 +1,568 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hallucination Onset Demo</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@112,600;112,700;112,800&family=Lato:ital,wght@0,400;0,700;1,400;1,700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+/* Layout: a fixed 1920 x 1080 page scaled to the window. Four screens follow in order: question, hidden states, tagging, check.
+   One model only: SmolLM2 writes the answer and a BiLSTM-CRF tagger reads its hidden states. */
+:root {
+  --bg: #120f0d; --panel: #1c1714; --raised: #27201c; --rule: #3a3029; --ink: #fff6ef; --soft: #cfc5bd; --dim: #8d8077;
+  --orange: #ff6a1a; --peach: #ffd3bd; --cell: #3b322c;
+  --tag-o: #e8e1db; --tag-o-ink: #15110e; --tag-b: #ff4a00; --tag-b-ink: #fff; --tag-i: #ffd3bd; --tag-i-ink: #7a2a00;
+  --display: "Archivo", "Arial Black", Arial, sans-serif;
+  --body: "Lato", "Segoe UI", Arial, sans-serif;
+  --mono: "IBM Plex Mono", "Courier New", monospace;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; overflow: hidden; background: #0c0a09; color: var(--ink); }
+#stage { position: fixed; left: 50%; top: 50%; width: 1920px; height: 1080px; transform-origin: 0 0; overflow: hidden; isolation: isolate; font: 400 27px/1.3 var(--body); color: var(--ink);
+  background: radial-gradient(42% 52% at 92% 100%, rgba(214,84,24,.32) 0, transparent 75%), radial-gradient(30% 36% at 4% 0, rgba(214,84,24,.18) 0, transparent 75%), var(--bg); }
+#stage::before { content: ""; position: absolute; inset: -40px; z-index: -1; pointer-events: none; opacity: .45; filter: blur(1.5px); animation: ribs 26s linear infinite;
+  background: repeating-linear-gradient(90deg, rgba(255,255,255,.035) 0 4px, transparent 4px 15px, rgba(0,0,0,.14) 15px 30px); }
+@keyframes ribs { to { transform: translateX(30px); } }
+h1, h2, h3, p { margin: 0; }
+#world { position: absolute; inset: 0; }
+#table { position: absolute; right: 128px; top: 34px; font: 700 24px var(--display); font-stretch: 112%; text-transform: uppercase; color: var(--orange); }
+#note { position: absolute; left: 128px; right: 420px; bottom: 30px; font-size: 22px; color: var(--soft); }
+.screen { position: absolute; inset: 0; display: none; }
+.screen.show { display: block; }
+@keyframes enter { from { opacity: 0; } to { opacity: 1; } }
+
+/* Step bar: where we are in the pipeline */
+#steps { position: absolute; left: 128px; top: 28px; display: flex; gap: 10px; align-items: center; opacity: 0; transition: opacity .5s; }
+#steps.on { opacity: 1; }
+#steps span { font: 700 21px var(--display); font-stretch: 112%; text-transform: uppercase; padding: 7px 16px; border-radius: 30px; background: var(--raised); color: var(--dim); transition: background .4s, color .4s; white-space: nowrap; }
+#steps span.done { color: var(--soft); }
+#steps span.now { background: var(--orange); color: #fff; }
+#steps i { width: 18px; height: 3px; background: var(--dim); }
+.title { position: absolute; left: 128px; right: 128px; top: 86px; font: 700 40px/1.15 var(--body); color: var(--ink); }
+
+/* Screen 1: question */
+#s-input.show { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 44px; padding: 0 128px 40px; text-align: center; }
+#s-input h1 { font: 800 112px/1 var(--display); font-stretch: 112%; text-transform: uppercase; letter-spacing: -3.5px; }
+#field { width: 1500px; min-height: 124px; background: var(--panel); border: 3px solid var(--rule); border-radius: 22px; padding: 30px 38px; font-size: 42px; line-height: 1.3; text-align: left; transition: border-color .3s, box-shadow .3s; }
+#field.typing { border-color: var(--orange); box-shadow: 0 0 38px rgba(255,106,26,.28); }
+#cursor { display: inline-block; width: 4px; height: 44px; background: var(--orange); vertical-align: -7px; margin-left: 3px; animation: blink 1s steps(2) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+#hint { color: var(--dim); }
+#send { font: 800 34px var(--display); font-stretch: 112%; text-transform: uppercase; padding: 20px 66px; border: 0; border-radius: 18px; background: var(--orange); color: #fff; cursor: pointer; box-shadow: 0 0 34px rgba(255,106,26,.35); transition: opacity .3s, background .2s; }
+#send:disabled { background: var(--raised); color: var(--dim); box-shadow: none; cursor: default; }
+button:focus-visible { outline: 4px solid #fff; outline-offset: 3px; }
+
+/* Screen 2: answer, tokens and layers */
+#tokens { position: absolute; left: 128px; right: 128px; top: 176px; display: flex; flex-wrap: wrap; gap: 8px 3px; align-items: flex-end; min-height: 72px; font: 500 38px/1.15 var(--mono); }
+#tokens.small { font-size: 23px; gap: 5px 2px; }
+.t { display: inline-block; padding: 6px 2px; white-space: pre; border-radius: 7px; transition: margin .6s ease, background .25s, color .25s, box-shadow .4s, transform .25s; }
+#tokens.split .t { margin: 0 5px; background: var(--raised); box-shadow: inset 0 -3px 0 var(--dim); padding: 6px 7px; }
+#tokens .t.now { background: var(--orange); color: #fff; transform: translateY(-5px); box-shadow: 0 0 20px rgba(255,106,26,.6); }
+#tokens .hide { opacity: 0; }
+.lane { position: absolute; left: 128px; right: 128px; top: 420px; height: 430px; display: grid; grid-template-columns: 210px minmax(0, 1fr) 400px; gap: 26px; align-items: center; background: var(--panel); border: 1px solid var(--rule); border-radius: 20px; padding: 22px 28px; opacity: 0; transform: translateY(14px); transition: opacity .6s, transform .6s; }
+.lane.on { opacity: 1; transform: none; }
+.lane h3 { font: 700 30px/1.1 var(--display); font-stretch: 112%; text-transform: uppercase; }
+.lane .role { display: block; color: var(--peach); font: 700 22px var(--body); margin-top: 6px; }
+.lane .key { display: flex; align-items: center; gap: 10px; font-size: 20px; color: var(--soft); margin-top: 18px; line-height: 1.2; }
+.lane .key b { flex: none; width: 22px; height: 22px; border-radius: 4px; background: var(--orange); }
+.net { position: relative; display: flex; flex-direction: column; gap: 6px; }
+.rowname { font-size: 22px; color: var(--soft); height: 28px; }
+.cells { display: flex; gap: 3px; height: 128px; }
+.cells i { flex: 1; background: var(--cell); border-radius: 3px; transition: background .6s, box-shadow .3s; }
+.cells i.hot { background: #fff; transition: none; }
+.cells i.hook { background: var(--orange); box-shadow: 0 0 12px rgba(255,106,26,.7); }
+.sweep { position: absolute; top: 0; bottom: 0; width: 5px; left: 0; background: #fff; box-shadow: 0 0 18px 5px rgba(255,190,150,.65); opacity: 0; }
+.rider { position: absolute; z-index: 3; top: 50%; left: 0; transform: translate(-50%, -50%); font: 600 25px var(--mono); white-space: pre; color: #fff; background: var(--orange); border-radius: 8px; padding: 5px 13px; box-shadow: 0 0 26px 5px rgba(255,106,26,.55); opacity: 0; transition: opacity .25s; pointer-events: none; }
+.rider.on { opacity: 1; }
+.store { align-self: stretch; display: flex; flex-direction: column; justify-content: center; gap: 8px; }
+.storehead { font-size: 22px; color: var(--soft); line-height: 1.25; }
+.vec { display: flex; gap: 3px; height: 60px; }
+.vec i { flex: 1; background: var(--raised); border-radius: 2px; transition: background .25s; }
+.vec i.vm { background: #fff6ef; }
+.vec i.va { background: var(--orange); }
+.num { font: 600 60px/1.1 var(--mono); color: var(--orange); margin-top: 6px; }
+.fly { position: absolute; z-index: 5; width: 13px; height: 13px; border-radius: 50%; background: var(--orange); box-shadow: 0 0 12px 3px rgba(255,106,26,.7); pointer-events: none; }
+
+/* Screens 3 and 4 share one column of cards */
+#outs { position: absolute; left: 128px; right: 128px; top: 200px; display: flex; flex-direction: column; gap: 18px; }
+.card { background: var(--panel); border-radius: 20px; padding: 18px 26px; display: flex; flex-direction: column; gap: 12px; box-shadow: 0 14px 40px rgba(180,70,10,.13); }
+.card h3 { font: 700 24px var(--display); font-stretch: 112%; text-transform: uppercase; display: flex; align-items: center; gap: 16px; }
+.card h3 small { font: 400 22px var(--body); text-transform: none; color: var(--soft); }
+
+/* The three tags. Used the same way everywhere on these screens. */
+#legend { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+.lg { background: var(--panel); border-radius: 18px; padding: 14px 20px; display: flex; align-items: center; gap: 16px; box-shadow: 0 14px 40px rgba(180,70,10,.13); transition: box-shadow .3s, transform .3s; }
+.lg.hit { box-shadow: 0 0 0 4px var(--orange), 0 14px 40px rgba(180,70,10,.2); transform: translateY(-3px); }
+.lg div { display: flex; flex-direction: column; line-height: 1.2; }
+.lg b { font-size: 26px; }
+.lg small { font-size: 21px; color: var(--soft); }
+.lg .count { margin-left: auto; font: 600 30px var(--mono); color: var(--ink); min-width: 96px; text-align: right; white-space: nowrap; }
+.tag { flex: none; font: 600 24px var(--mono); padding: 6px 14px; border-radius: 9px; white-space: nowrap; }
+.tag.O, .tag.Safe { background: var(--tag-o); color: var(--tag-o-ink); }
+.tag.B-HALL { background: var(--tag-b); color: var(--tag-b-ink); }
+.tag.I-HALL { background: var(--tag-i); color: var(--tag-i-ink); }
+
+/* Token strip: one chip per token with its tag underneath */
+#strip { display: flex; flex-wrap: wrap; gap: 14px 18px; align-items: flex-start; font: 500 38px/1.1 var(--mono); --tagsize: 19px; }
+#strip.mid { font-size: 29px; --tagsize: 16px; gap: 10px 14px; }
+#strip.small { font-size: 23px; --tagsize: 13px; gap: 8px 10px; }
+.word { display: inline-flex; gap: 7px; }
+.ct { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.ct .w { padding: 7px 7px; border-radius: 7px; white-space: pre; background: var(--raised); color: #b9aca2; transition: background .3s, color .3s, box-shadow .3s, transform .25s; min-width: 1.1em; text-align: center; }
+.ct .g { font: 600 var(--tagsize) var(--mono); color: var(--dim); opacity: 0; transform: translateY(-8px); transition: opacity .35s, transform .35s; letter-spacing: -.3px; }
+.ct.read .w { color: var(--ink); }
+.ct.read .g { opacity: 1; transform: none; }
+.ct.now .w { box-shadow: 0 0 0 3px var(--ink); transform: translateY(-4px); }
+.ct.read.B-HALL .w { background: var(--tag-b); color: var(--tag-b-ink); }
+.ct.read.I-HALL .w { background: var(--tag-i); color: var(--tag-i-ink); }
+.ct.read.B-HALL .g { color: var(--tag-b); }
+.ct.read.I-HALL .g { color: #b83a00; }
+.ct.space .w { color: var(--dim); }
+
+/* The tagger machine */
+.mach { position: relative; overflow: hidden; display: flex; align-items: center; gap: 12px; background: var(--raised); border-radius: 14px; padding: 12px 18px; }
+.mach > i { flex: none; width: 24px; height: 4px; background: var(--ink); position: relative; }
+.mach > i::after { content: ""; position: absolute; right: -2px; top: -6px; border-left: 11px solid var(--ink); border-top: 8px solid transparent; border-bottom: 8px solid transparent; }
+.mlabel { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.mlabel small { font-size: 18px; color: var(--soft); }
+.mtok { min-width: 118px; text-align: center; font: 600 28px var(--mono); background: #15110e; color: #fff; border-radius: 9px; padding: 8px 12px; white-space: pre; }
+.mvec { width: 150px; height: 38px; border-radius: 5px; background: repeating-linear-gradient(90deg, #15110e 0 13px, transparent 13px 15px) 0 0 / 50% 100% no-repeat, repeating-linear-gradient(90deg, #ff6a1a 0 13px, transparent 13px 15px) 100% 0 / 50% 100% no-repeat; }
+.mbox { font: 700 24px var(--display); font-stretch: 112%; background: #fff; color: #15110e; border: 2.5px solid #15110e; border-radius: 11px; padding: 8px 18px; }
+.mbox.on { animation: work .5s ease-in-out infinite alternate; }
+@keyframes work { to { background: #ffd3bd; border-color: #ff5a00; } }
+.mtag { min-width: 150px; text-align: center; font-size: 26px; }
+.mp { font: 600 26px var(--mono); color: var(--ink); margin-left: auto; }
+.pkt { position: absolute; z-index: 2; top: 50%; left: 0; width: 16px; height: 16px; margin-top: -8px; border-radius: 50%; background: #ff6a1a; box-shadow: 0 0 16px 5px rgba(255,106,26,.65); opacity: 0; pointer-events: none; }
+
+/* Onset score of each token */
+.spark { height: 96px; display: flex; gap: 2px; align-items: flex-end; border-bottom: 2px solid var(--rule); }
+.spark i { flex: 1; max-width: 46px; height: 0; min-width: 2px; background: #c9beb5; border-radius: 3px 3px 0 0; transition: height .5s cubic-bezier(.2,1.9,.4,1); }
+.spark i.b { background: var(--tag-b); }
+.spark i.h { background: #ffb38f; }
+#topnote { font-size: 24px; opacity: 0; transition: opacity .4s; display: flex; align-items: center; gap: 12px; }
+#topnote.on { opacity: 1; }
+#topnote code { font: 600 24px var(--mono); background: var(--tag-b); color: #fff; border-radius: 6px; padding: 1px 10px; }
+
+/* Screen 4: tagger against the label */
+.sent { font-size: 40px; line-height: 1.55; overflow-wrap: anywhere; }
+.sent.mid { font-size: 31px; } .sent.small { font-size: 25px; }
+.sent span.B-HALL { background: var(--tag-b); color: var(--tag-b-ink); font-weight: 700; border-radius: 6px 0 0 6px; padding: 2px 3px; }
+.sent span.I-HALL { background: var(--tag-i); color: var(--tag-i-ink); font-weight: 700; padding: 2px 0; }
+.facts { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 20px; font-size: 27px; }
+.facts b { font: 700 21px var(--display); font-stretch: 112%; text-transform: uppercase; color: #cf4e14; padding-top: 5px; }
+#match { font: 800 56px var(--display); font-stretch: 112%; margin-left: auto; }
+.only-tag, .only-check { display: none; }
+#outs.tagging .only-tag { display: flex; }
+#outs.check .only-check { display: flex; }
+#outs.check .card { animation: rise .6s cubic-bezier(.2,.8,.2,1) both; }
+@keyframes rise { from { opacity: 0; transform: translateY(30px); } to { opacity: 1; transform: none; } }
+
+#again, #next { position: absolute; right: 128px; bottom: 20px; font: 800 26px var(--display); font-stretch: 112%; text-transform: uppercase; padding: 13px 46px; border: 0; border-radius: 14px; background: var(--orange); color: #fff; cursor: pointer; display: none; z-index: 6; box-shadow: 0 0 26px rgba(255,106,26,.4); }
+#again.on, #next.on { display: block; animation: enter .4s ease both; }
+
+/* Page looks: dark inside the model, light for the tagger, orange for the check */
+#stage[data-page="light"] { --ink: #15110e; --soft: #5e524a; --dim: #8a7d74; --panel: #fff; --raised: #f3ebe4; --rule: #e6ddd6;
+  background: radial-gradient(50% 55% at 95% 0, rgba(255,160,110,.42) 0, transparent 75%), radial-gradient(40% 50% at 0 100%, rgba(255,160,110,.3) 0, transparent 75%), #fff7f1; }
+#stage[data-page="light"]::before { opacity: .12; }
+#stage[data-page="light"] #steps span:not(.now) { background: #efe5dd; }
+#stage[data-page="orange"] { background: radial-gradient(60% 80% at 82% 22%, rgba(240,136,84,.4) 0, transparent 72%), linear-gradient(120deg, #cf4e14, #da5b20 58%, #e0672c); }
+#stage[data-page="orange"] .title, #stage[data-page="orange"] #table, #stage[data-page="orange"] #note { color: #fff; }
+#stage[data-page="orange"] #outs { --ink: #15110e; --soft: #5e524a; --dim: #8a7d74; --panel: #fff; --raised: #f3ebe4; --rule: #e6ddd6; color: #15110e; }
+#stage[data-page="orange"] #steps span { background: rgba(255,255,255,.2); color: #fff; }
+#stage[data-page="orange"] #steps span.now { background: #15110e; }
+#stage[data-page="orange"] #steps i { background: #fff; }
+#stage[data-page="orange"] #again { background: #15110e; }
+
+/* Transitions */
+.flyc { position: absolute; z-index: 21; font-size: 42px; line-height: 1.3; color: #fff; white-space: pre; pointer-events: none; text-shadow: 0 0 14px rgba(255,160,90,.9); }
+#portal { position: absolute; z-index: 20; left: 810px; top: 330px; width: 300px; height: 300px; border-radius: 50%; pointer-events: none; opacity: 0;
+  background: radial-gradient(circle, #fff 0, #ffd3bd 24%, #ff6a1a 52%, rgba(255,106,26,.25) 68%, transparent 72%); box-shadow: 0 0 90px 30px rgba(255,106,26,.5); }
+#ambient { position: absolute; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; }
+#ambient i { position: absolute; width: 1200px; height: 1200px; border-radius: 50%; background: radial-gradient(circle, rgba(255,106,26,.2) 0, transparent 66%); will-change: transform; }
+#ambient i:first-child { left: -300px; top: -500px; animation: drift1 17s ease-in-out infinite alternate; }
+#ambient i:last-child { right: -300px; bottom: -600px; animation: drift2 21s ease-in-out infinite alternate; }
+@keyframes drift1 { to { transform: translate(760px, 340px) scale(1.2); } }
+@keyframes drift2 { to { transform: translate(-820px, -300px) scale(.9); } }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition-duration: 0s !important; animation-duration: 0s !important; animation-iteration-count: 1 !important; } }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="ambient"><i></i><i></i></div>
+  <div id="world">
+  <div id="table">Table 35</div>
+  <div id="steps"><span data-s="1">1 Question</span><i></i><span data-s="2">2 Answer and tokens</span><i></i><span data-s="3">3 Hidden states</span><i></i><span data-s="4">4 Tag each token</span><i></i><span data-s="5">5 Check</span></div>
+
+  <section class="screen show" id="s-input">
+    <h1>Enter your input:</h1>
+    <div id="field" aria-live="off"><span id="typed"></span><span id="cursor"></span></div>
+    <p id="hint">Type your question, then press Enter.</p>
+    <button id="send" type="button" disabled>Send</button>
+  </section>
+
+  <section class="screen" id="s-flow">
+    <h2 class="title" id="flow-title"></h2>
+    <div id="tokens"></div>
+    <div class="lane" id="lane-self"></div>
+  </section>
+
+  <section class="screen" id="s-out">
+    <h2 class="title" id="out-title"></h2>
+    <div id="outs" class="tagging">
+      <div id="legend">
+        <div class="lg" id="lg-Safe"><span class="tag O">O</span><div><b>Safe</b><small>Not part of a hallucination</small></div><span class="count" id="n-Safe"></span></div>
+        <div class="lg" id="lg-B-HALL"><span class="tag B-HALL">B-HALL</span><div><b>Hallucination begins</b><small>The first wrong token, the onset</small></div><span class="count" id="n-B-HALL"></span></div>
+        <div class="lg" id="lg-I-HALL"><span class="tag I-HALL">I-HALL</span><div><b>Hallucination continues</b><small>The later wrong tokens</small></div><span class="count" id="n-I-HALL"></span></div>
+      </div>
+
+      <div class="card only-tag">
+        <h3>The answer, token by token <small>The tag under each token is the tagger's output.</small></h3>
+        <div id="strip"></div>
+      </div>
+      <div class="card only-tag">
+        <div class="mach">
+          <div class="mlabel"><span class="mtok" id="mt"></span><small>token</small></div><i></i>
+          <div class="mlabel"><span class="mvec"></span><small>its 20,480 numbers</small></div><i></i>
+          <div class="mlabel"><span class="mbox" id="mb">BiLSTM</span><small>reads the context</small></div><i></i>
+          <div class="mlabel"><span class="mbox" id="mc">CRF</span><small>checks the tag order</small></div><i></i>
+          <div class="mlabel"><span class="tag mtag O" id="mg">O</span><small>tag</small></div>
+          <span class="mp" id="mp"></span>
+        </div>
+        <h3 style="margin-top:4px">Onset score of each token <small>How strongly the tagger believes a hallucination begins at this token, from 0 to 1.</small></h3>
+        <div class="spark" id="sp"></div>
+        <div id="topnote"></div>
+      </div>
+
+      <div class="card only-check">
+        <h3>What the tagger marked <span id="match"></span></h3>
+        <p class="sent" id="sent-pred"></p>
+      </div>
+      <div class="card only-check">
+        <h3>What the label says is wrong <small>Marked before our experiment, never shown to the tagger.</small></h3>
+        <p class="sent" id="sent-gold"></p>
+      </div>
+      <div class="card only-check">
+        <div class="facts"><b>Question</b><span id="f-q"></span><b>Correct answer</b><span id="f-a"></span></div>
+      </div>
+    </div>
+  </section>
+
+  <p id="note">Recorded demo: all questions and outputs come from an earlier saved run. No model runs live.</p>
+  <button id="next" type="button">Next</button>
+  <button id="again" type="button">New input</button>
+  </div>
+  <div id="portal"></div>
+</div>
+
+<script src="demo_data.js"></script>
+<script src="phase_data.js"></script>
+<script>
+const { answers } = window.DEMO, R = window.PHASES.readers.self;
+const $ = id => document.getElementById(id);
+const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const SPEED = /fast/.test(location.hash) ? 20 : 1;
+const stage = $("stage");
+const fmt = n => Math.round(n).toLocaleString("en-US");
+const TAGNAME = { Safe: "O", "B-HALL": "B-HALL", "I-HALL": "I-HALL" };
+function fit() { const s = Math.min(innerWidth / 1920, innerHeight / 1080); stage.style.transform = `scale(${s}) translate(-50%, -50%)`; }
+addEventListener("resize", fit); fit();
+const wait = ms => new Promise(r => setTimeout(r, reduced ? 0 : ms / SPEED));
+function tween(ms, draw) {
+  if (reduced) { draw(1); return Promise.resolve(); }
+  return new Promise(done => {
+    const start = performance.now();
+    const frame = now => { const f = Math.min(1, (now - start) * SPEED / ms); draw(f); if (f < 1) requestAnimationFrame(frame); else done(); };
+    requestAnimationFrame(frame);
+  });
+}
+function show(id) { document.querySelectorAll(".screen").forEach(s => s.classList.toggle("show", s.id === id)); }
+const setPage = name => { stage.dataset.page = name; };
+function setStep(n) {
+  $("steps").classList.toggle("on", n > 0);
+  document.querySelectorAll("#steps span").forEach(s => { s.classList.toggle("now", +s.dataset.s === n); s.classList.toggle("done", +s.dataset.s < n); });
+}
+function animate(el, frames, ms, opts = {}) { return el.animate(frames, { duration: ms / SPEED, delay: (opts.delay || 0) / SPEED, easing: opts.easing || "cubic-bezier(.5,.05,.2,1)", fill: "both" }); }
+/* Enter the model: the letters fly into a portal, and the portal fills the page. */
+async function warp(mid) {
+  if (reduced) { mid(); return; }
+  const S = stage.getBoundingClientRect(), k = S.width / 1920, typedEl = $("typed"), text = typedEl.textContent;
+  typedEl.textContent = "";
+  const letters = [...text].map(c => { const s = document.createElement("span"); s.textContent = c; typedEl.appendChild(s); return s; });
+  const flying = letters.map((s, i) => {
+    const r = s.getBoundingClientRect(), d = document.createElement("span");
+    d.className = "flyc"; d.textContent = s.textContent; d.style.left = (r.left - S.left) / k + "px"; d.style.top = (r.top - S.top) / k + "px";
+    stage.appendChild(d);
+    const dx = 960 - (r.left - S.left) / k, dy = 480 - (r.top - S.top) / k;
+    return animate(d, [{ transform: "none", opacity: 1 }, { transform: `translate(${dx * .35}px, ${dy * .1 - 50}px) rotate(${(i * 47) % 90 - 45}deg) scale(1.3)`, opacity: 1, offset: .35 }, { transform: `translate(${dx}px, ${dy}px) rotate(${(i * 97) % 720 - 360}deg) scale(.1)`, opacity: .2 }], 850, { delay: i * 17 });
+  });
+  typedEl.style.visibility = "hidden";
+  ["#s-input h1", "#hint", "#send"].forEach(sel => animate(document.querySelector(sel), [{ opacity: 1, transform: "none" }, { opacity: 0, transform: "scale(.92)" }], 380));
+  animate($("field"), [{ opacity: 1, transform: "none" }, { opacity: 0, transform: "scale(.72)" }], 560, { delay: 180 });
+  const portal = $("portal");
+  animate(portal, [{ opacity: 0, transform: "scale(0) rotate(0)" }, { opacity: 1, transform: "scale(1)" }], 520, { easing: "cubic-bezier(.2,1.4,.4,1)", delay: 160 });
+  await Promise.all(flying.map(a => a.finished));
+  document.querySelectorAll(".flyc").forEach(d => d.remove());
+  await animate(portal, [{ opacity: 1, transform: "scale(1)" }, { opacity: 1, transform: "scale(.82)", offset: .3 }, { opacity: 1, transform: "scale(13)" }], 720, { easing: "cubic-bezier(.7,0,.8,.3)" }).finished;
+  mid();
+  document.querySelector(".screen.show").animate([{ opacity: 0 }, { opacity: 1 }], { duration: 450 / SPEED, easing: "ease" });
+  await animate(portal, [{ opacity: 1, transform: "scale(13)" }, { opacity: 0, transform: "scale(13)" }], 520, { easing: "ease-out" }).finished;
+  portal.getAnimations().forEach(a => a.cancel());
+}
+async function fade(mid) {
+  mid();
+  if (reduced) return;
+  document.querySelector(".screen.show").animate([{ opacity: 0 }, { opacity: 1 }], { duration: 450 / SPEED, easing: "ease" });
+  await wait(450);
+}
+
+/* The saved examples: the ones where tagging works, shortest first, then one miss and one false alarm. */
+const works = answers.filter(a => a.tag === "works").sort((a, b) => a.text.length - b.text.length);
+const first = works.findIndex(a => a.id === 55);
+if (first > 0) works.unshift(works.splice(first, 1)[0]);
+const examples = [...works, ...answers.filter(a => a.tag === "missed"), ...answers.filter(a => a.tag === "false alarm")];
+let ex = 0, typed = 0, state = "typing", built = [];
+const pickEx = /ex=(\d+)/.exec(location.hash); if (pickEx) ex = Math.min(+pickEx[1], examples.length - 1);
+const cur = () => examples[ex];
+
+/* Screen 1: any key reveals the next letter of the saved question. */
+function resetInput() {
+  typed = 0; state = "typing";
+  setPage("dark"); setStep(0);
+  ["#s-input h1", "#hint", "#send", "#field"].forEach(sel => document.querySelector(sel).getAnimations().forEach(a => a.cancel()));
+  $("typed").style.visibility = "";
+  $("typed").textContent = ""; $("cursor").style.display = "";
+  $("field").classList.remove("typing");
+  $("send").disabled = true;
+  $("hint").textContent = "Type your question, then press Enter.";
+  $("again").classList.remove("on");
+  show("s-input");
+}
+function typeOne() {
+  const q = cur().question;
+  if (typed >= q.length) return;
+  typed++;
+  $("typed").textContent = q.slice(0, typed);
+  $("field").classList.add("typing");
+  if (typed === q.length) { $("send").disabled = false; $("hint").textContent = "Press Enter to send."; }
+}
+addEventListener("keydown", e => {
+  if (e.ctrlKey || e.metaKey || e.altKey || /^F\d+$/.test(e.key) || e.key === "Tab") return;
+  if (state === "next" && ["Enter", "ArrowRight", " "].includes(e.key)) { e.preventDefault(); $("next").click(); return; }
+  if (state !== "typing") return;
+  if (e.key === "Enter") { e.preventDefault(); if (typed === cur().question.length) send(); return; }
+  if (e.key.length === 1 || e.key === "Backspace") { e.preventDefault(); typeOne(); }
+});
+$("send").onclick = () => { if (state === "typing" && typed === cur().question.length) send(); };
+
+/* Screen 2: the model's layers. Orange cells are the 10 layers picked with cosine similarity. */
+function buildLane() {
+  const lane = $("lane-self"), n = R.attn.length;
+  const cells = kind => Array.from({ length: n }, (_, i) => `<i data-kind="${kind}" data-i="${i}"></i>`).join("");
+  lane.innerHTML = `<div><h3>SmolLM2</h3><span class="role">reads its own answer</span><div class="key"><b></b><span>a layer we picked with cosine similarity</span></div></div>
+    <div class="net"><div class="rowname">Attention part of its ${n} layers</div><div class="cells" id="ca">${cells("attn")}</div><div class="rowname">MLP part of its ${n} layers</div><div class="cells" id="cm">${cells("mlp")}</div><div class="sweep" id="sw"></div><div class="rider" id="ri"></div></div>
+    <div class="store"><div class="storehead">The hidden-state vector of one token</div><div class="vec" id="vec">${Array.from({ length: 10 }, () => "<i></i>").join("")}</div><div class="num" id="num">0</div><div class="storehead">numbers copied for each token</div></div>`;
+}
+function flyDot(from, to) {
+  if (reduced) return;
+  const S = stage.getBoundingClientRect(), k = S.width / 1920, a = from.getBoundingClientRect(), b = to.getBoundingClientRect();
+  const d = document.createElement("span"); d.className = "fly"; stage.appendChild(d);
+  const x0 = (a.left - S.left + a.width / 2) / k, y0 = (a.top - S.top + a.height / 2) / k, x1 = (b.left - S.left + b.width / 2) / k, y1 = (b.top - S.top + b.height / 2) / k;
+  d.style.left = x0 + "px"; d.style.top = y0 + "px";
+  const anim = d.animate([{ transform: "translate(0,0) scale(1)", opacity: 1 }, { transform: `translate(${x1 - x0}px, ${y1 - y0}px) scale(.5)`, opacity: .85 }], { duration: 650 / SPEED, easing: "cubic-bezier(.3,.6,.3,1)" });
+  anim.onfinish = () => d.remove();
+}
+let flowTokens = [];
+function setupFlow() {
+  const a = cur(), tokensEl = $("tokens");
+  $("flow-title").textContent = "SmolLM2, a small language model, answers the question.";
+  tokensEl.textContent = ""; tokensEl.className = a.text.length > 120 ? "small" : "";
+  flowTokens = a.self.tokens.map(t => { const s = document.createElement("span"); s.className = "t hide"; s.textContent = a.text.slice(t.s, t.e); tokensEl.appendChild(s); return s; });
+  buildLane(); $("lane-self").classList.remove("on");
+  setPage("dark"); setStep(2); show("s-flow");
+}
+async function flow() {
+  const list = flowTokens, tokensEl = $("tokens"), a = cur();
+  let shown = 0;
+  await tween(2200, f => { const n = Math.ceil(f * list.length); for (; shown < n; shown++) list[shown].classList.remove("hide"); });
+  await wait(600);
+
+  $("flow-title").textContent = `The answer is split into ${list.length} tokens. A token is a word or a piece of a word.`;
+  tokensEl.classList.add("split");
+  await wait(2600);
+
+  setStep(3);
+  $("flow-title").textContent = "The model reads each token. At the 10 orange layers we copy its hidden state.";
+  $("lane-self").classList.add("on");
+  await wait(700);
+
+  const hooked = new Set(), count = list.length, tokenMs = Math.max(170, 9500 / count), vec = $("vec").children;
+  $("sw").style.opacity = 1; $("ri").classList.add("on");
+  for (let p = 0; p < count; p++) {
+    list.forEach((s, i) => s.classList.toggle("now", i === p));
+    const fired = new Set(), t = a.self.tokens[p];
+    $("ri").textContent = a.text.slice(t.s, t.e).trim() || "␣";
+    await tween(p === 0 ? 1500 : tokenMs, f => {
+      const n = R.attn.length, at = Math.min(n - 1, Math.floor(f * n));
+      $("sw").style.left = f * 100 + "%"; $("ri").style.left = f * 100 + "%";
+      ["a", "m"].forEach(c => {
+        const row = $("c" + c), kind = c === "a" ? "attn" : "mlp";
+        [...row.children].forEach((cell, i) => {
+          const sel = R.critical[kind].includes(i);
+          cell.classList.toggle("hot", i === at && !sel);
+          if (sel && i <= at) {
+            cell.classList.add("hook");
+            const id = kind + i;
+            if (!hooked.has(id)) {
+              hooked.add(id);
+              const made = hooked.size;
+              flyDot(cell, vec[made - 1]);
+              setTimeout(() => { vec[made - 1].className = kind === "mlp" ? "vm" : "va"; $("num").textContent = fmt(made * R.hidden); }, reduced ? 0 : 600 / SPEED);
+            } else if (!fired.has(id) && (tokenMs >= 300 || p % 3 === 0)) {
+              flyDot(cell, vec[(fired.size + p) % 10]);
+            }
+            fired.add(id);
+          }
+        });
+      });
+    });
+  }
+  await wait(700);
+  list.forEach(s => s.classList.remove("now"));
+  $("sw").style.opacity = 0; $("ri").classList.remove("on");
+  [...$("ca").children, ...$("cm").children].forEach(c => c.classList.remove("hot"));
+  $("flow-title").textContent = `Every token now has a vector of ${fmt(10 * R.hidden)} numbers. A tagger will read these vectors.`;
+  await wait(800);
+}
+
+/* Screens 3 and 4 */
+const sizeClass = n => n > 40 ? "small" : n > 24 ? "mid" : "";
+function goldTags(a) {
+  /* The label as BIO tags on the same tokens: the first token that overlaps a span is B-HALL, the rest are I-HALL. */
+  const tags = a.self.tokens.map(() => "Safe");
+  a.spans.forEach(([s, e]) => {
+    const hit = a.self.tokens.map((t, i) => Math.max(s, t.s) < Math.min(e, t.e) ? i : -1).filter(i => i >= 0);
+    hit.forEach((i, k) => { tags[i] = k === 0 ? "B-HALL" : "I-HALL"; });
+  });
+  return tags;
+}
+function sentence(el, a, tags) {
+  el.textContent = ""; el.className = "sent " + (a.text.length > 200 ? "small" : a.text.length > 110 ? "mid" : "");
+  let at = 0;
+  a.self.tokens.forEach((t, i) => {
+    el.append(a.text.slice(at, t.s));
+    const raw = a.text.slice(t.s, t.e), lead = tags[i] === "B-HALL" ? raw.match(/^\s*/)[0] : "";
+    if (lead) el.append(lead);
+    const s = document.createElement("span"); if (tags[i] !== "Safe") s.className = tags[i]; s.textContent = raw.slice(lead.length); el.appendChild(s);
+    at = t.e;
+  });
+  el.append(a.text.slice(at));
+}
+function buildOut() {
+  const a = cur(), toks = a.self.tokens, strip = $("strip");
+  $("outs").className = "tagging";
+  strip.textContent = ""; strip.className = sizeClass(toks.length);
+  const sp = $("sp"); sp.textContent = "";
+  built = [];
+  let word = null;
+  toks.forEach((t, i) => {
+    const raw = a.text.slice(t.s, t.e), blank = raw.trim() === "";
+    if (!word || /^\s/.test(raw) || (i > 0 && a.text.slice(toks[i - 1].s, toks[i - 1].e).trim() === "")) { word = document.createElement("span"); word.className = "word"; strip.appendChild(word); }
+    const c = document.createElement("div"); c.className = "ct " + t.l + (blank ? " space" : "");
+    c.innerHTML = '<span class="w"></span><span class="g"></span>';
+    c.firstChild.textContent = blank ? "␣" : raw.trim(); c.lastChild.textContent = TAGNAME[t.l];
+    word.appendChild(c);
+    const bar = document.createElement("i"); sp.appendChild(bar);
+    built.push({ c, t, bar });
+  });
+  ["Safe", "B-HALL", "I-HALL"].forEach(k => { $("n-" + k).textContent = ""; $("lg-" + k).classList.remove("hit"); });
+  $("topnote").classList.remove("on");
+  sentence($("sent-pred"), a, toks.map(t => t.l));
+  sentence($("sent-gold"), a, goldTags(a));
+  $("f-q").textContent = a.question; $("f-a").textContent = a.gold_answer;
+  $("match").textContent = "";
+}
+function machine(t, ms = 0) {
+  const a = cur();
+  if (ms && !reduced) {
+    const box = $("mt").closest(".mach"); let pkt = box.querySelector(".pkt");
+    if (!pkt) { pkt = document.createElement("span"); pkt.className = "pkt"; box.appendChild(pkt); }
+    const from = $("mt").parentElement.offsetLeft + $("mt").offsetWidth, to = $("mg").parentElement.offsetLeft;
+    pkt.animate([{ transform: `translateX(${from}px)`, opacity: 1 }, { transform: `translateX(${to}px)`, opacity: 1 }], { duration: ms * .9 / SPEED, easing: "linear" });
+    $("mg").animate([{ transform: "scale(1.22)" }, { transform: "none" }], { duration: Math.min(ms, 300) / SPEED, delay: ms * .75 / SPEED, easing: "ease-out" });
+  }
+  $("mt").textContent = a.text.slice(t.s, t.e).trim() || "␣";
+  const g = $("mg"); g.textContent = TAGNAME[t.l]; g.className = "tag mtag " + t.l;
+  $("mp").textContent = `onset score ${t.p.toFixed(2)}`;
+}
+const counts = { Safe: 0, "B-HALL": 0, "I-HALL": 0 };
+function paint(i) {
+  const { c, t, bar } = built[i];
+  built.forEach((b, k) => b.c.classList.toggle("now", k === i));
+  c.classList.add("read");
+  bar.style.height = Math.max(3, t.p * 100) + "%";
+  bar.classList.toggle("b", t.l === "B-HALL"); bar.classList.toggle("h", t.l === "I-HALL");
+  counts[t.l]++; $("n-" + t.l).textContent = "× " + counts[t.l];
+  ["Safe", "B-HALL", "I-HALL"].forEach(k => $("lg-" + k).classList.toggle("hit", k === t.l));
+}
+function pressNext() {
+  state = "next"; $("next").classList.add("on");
+  return new Promise(done => { $("next").onclick = () => { $("next").classList.remove("on"); state = "running"; done(); }; });
+}
+function resultTitle(a) {
+  if (a.tag === "missed") return "Check: the tagger missed this one. It marked nothing, but the label marks a wrong part.";
+  if (a.tag === "false alarm") return "Check: a false alarm. The tagger marked words, but the label marks nothing.";
+  return a.self.overlap === 1 ? "Check: the tagger marked exactly the part that the label says is wrong." : "Check: the tagger against the label.";
+}
+async function output() {
+  const a = cur();
+  await fade(() => { buildOut(); setPage("light"); setStep(4); $("out-title").textContent = "A BiLSTM-CRF tagger reads the vectors and gives every token one of three tags."; show("s-out"); counts.Safe = counts["B-HALL"] = counts["I-HALL"] = 0; machine(built[0].t); });
+  await wait(1200);
+  $("mb").classList.add("on"); $("mc").classList.add("on");
+  const per = Math.max(260, Math.min(650, 11000 / built.length));
+  for (let i = 0; i < built.length; i++) { paint(i); machine(built[i].t, per); await wait(built[i].t.l === "B-HALL" ? per + 1100 : per); }
+  $("mb").classList.remove("on"); $("mc").classList.remove("on");
+  built.forEach(b => b.c.classList.remove("now"));
+  ["Safe", "B-HALL", "I-HALL"].forEach(k => $("lg-" + k).classList.remove("hit"));
+  const onsets = built.filter(b => b.t.l === "B-HALL");
+  const note = $("topnote");
+  if (onsets.length) {
+    const b = onsets.reduce((x, y) => y.t.p > x.t.p ? y : x);
+    let from = b.t.s, to = b.t.e;
+    while (from < to && /\s/.test(a.text[from])) from++;
+    while (to < a.text.length && !/\s/.test(a.text[to])) to++;
+    note.innerHTML = `The tagger says a hallucination begins at <code></code> with onset score <b>${b.t.p.toFixed(2)}</b>.`;
+    note.querySelector("code").textContent = a.text.slice(from, to).replace(/[^\w]+$/, "");
+    $("out-title").textContent = onsets.length === 1 ? "One B-HALL tag marks where the hallucination begins. The I-HALL tags continue it." : `${onsets.length} B-HALL tags: the tagger says a hallucination begins at each one.`;
+  } else {
+    note.textContent = "The tagger gave no B-HALL tag. It says this answer has no hallucination.";
+    $("out-title").textContent = "Every token is tagged O. The tagger found no hallucination.";
+  }
+  note.classList.add("on");
+  await wait(900);
+  await pressNext();
+  await fade(() => { setPage("orange"); setStep(5); $("out-title").textContent = resultTitle(a); $("outs").className = "check"; });
+  await wait(350);
+  if (a.spans.length || a.self.pred_spans.length) await tween(1100, f => { $("match").textContent = `${Math.round(f * a.self.overlap * 100)}% overlap`; });
+  await wait(500);
+  $("again").classList.add("on");
+  state = "done";
+}
+async function send() {
+  state = "running";
+  $("send").disabled = true;
+  $("cursor").style.display = "none";
+  setStep(1);
+  await warp(setupFlow);
+  await flow();
+  await pressNext();
+  await output();
+}
+$("again").onclick = async () => { $("again").classList.remove("on"); state = "running"; await fade(() => { ex = (ex + 1) % examples.length; resetInput(); state = "running"; }); state = "typing"; };
+
+resetInput();
+/* Used only to check the page: #auto types and sends, #fast runs it quickly, #ex=3 starts at example 3. */
+if (/auto/.test(location.hash)) { const q = cur().question; for (let i = 0; i < q.length; i++) typeOne(); send(); }
+</script>
+</body>
+</html>
